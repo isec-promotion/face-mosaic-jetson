@@ -350,11 +350,11 @@ def main():
         '-fflags', '+genpts',
         '-vsync', 'cfr',
         
-        # --- 修正箇所 (Jetson向けNVENC設定 Ver.3) ---
+        # --- ソフトウェアエンコーダー設定 ---
         '-c:v', 'libx264',
         '-preset', 'veryfast', # CPU負荷を最小限に
         '-tune', 'zerolatency', # 低遅延
-        # --- 修正ここまで ---
+        # --- エンコーダー設定ここまで ---
         
         '-b:v', '2500k',
         '-maxrate', '2500k', # -b:v と同じ値にすることでCBRに近づける
