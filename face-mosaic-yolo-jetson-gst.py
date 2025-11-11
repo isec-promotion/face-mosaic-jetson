@@ -369,19 +369,32 @@ def main():
     # GStreamerパイプラインの構築（堅牢化版）
     print("ハードウェアエンコーダー（nvv4l2h264enc）を使用します")
 
+    # 変換器の自動選択（ある方を使う）
+    def pick_nvconv():
+        import shutil, subprocess
+        def has(elem):
+            if not shutil.which("gst-inspect-1.0"):
+                return False
+            try:
+                return subprocess.run(
+                    ["gst-inspect-1.0", elem],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
+                ).returncode == 0
+            except Exception:
+                return False
+        return "nvvideoconvert" if has("nvvideoconvert") else "nvvidconv"
+
+    nvconv = pick_nvconv()
     bitrate_bps = args.bitrate * 1000
 
     gst_pipeline = (
         "appsrc is-live=true block=true format=time do-timestamp=true ! "
         f"video/x-raw,format=BGR,width={args.width},height={args.height},framerate={args.fps}/1 ! "
-        "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=0 ! "
-        "videoconvert ! video/x-raw,format=RGBA ! "
-        "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=0 ! "
-        "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
+        "videoconvert ! video/x-raw,format=BGRx ! "
+        f"{nvconv} ! video/x-raw(memory:NVMM),format=NV12 ! "
         f"nvv4l2h264enc bitrate={bitrate_bps} preset-level=4 insert-sps-pps=true "
         f"iframeinterval={args.fps*2} control-rate=1 maxperf-enable=1 profile=high ! "
         "h264parse config-interval=1 ! video/x-h264,stream-format=byte-stream,alignment=au ! "
-        "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! "
         "flvmux streamable=true ! "
         f"rtmpsink location='{youtube_url}' sync=false async=false"
     )
