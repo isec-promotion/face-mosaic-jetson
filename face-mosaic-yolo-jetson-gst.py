@@ -289,19 +289,21 @@ def main():
     bitrate_bps = args.bitrate * 1000 # kbps を bps に変換
     
     gst_pipeline = (
-        f"appsrc ! "
-        f"video/x-raw,format=BGR ! "                # 1. OpenCVから BGR (CPUメモリ)
-        f"videoconvert ! "                          # 2. CPUで色空間変換 (BGR -> BGRx)
-        f"video/x-raw,format=BGRx ! "               #    (VICが扱える4ch形式にする)
-        f"nvvideoconvert ! "                        # 3. NVMMメモリへ転送＆変換 (BGRx -> NV12)
-        f"video/x-raw(memory:NVMM),format=NV12 ! "  # 4. nvv4l2h264enc が要求する NVMM上のNV12
-        f"nvv4l2h264enc "                           # 5. ハードウェアエンコード
-        f"bitrate={bitrate_bps} "
-        f"preset-level=4 " # 4 = UltraFastPreset (低遅延)
-        f"insert-sps-pps=true ! " # SPS/PPSをストリームに含める
-        f"h264parse ! "
-        f"flvmux streamable=true ! " # RTMP用のFLVコンテナ
-        f"rtmpsink location='{youtube_url}'"
+        # 1) OpenCV → appsrc（ライブ映像であることを明示）
+        f"appsrc is-live=true do-timestamp=true format=time ! "
+        # 2) CPUメモリ上のBGRと寸法・fpsを明示
+        f"video/x-raw,format=BGR,width={args.width},height={args.height},framerate={args.fps}/1 ! "
+        # 3) CPUでNV12へ（VICが苦手なBGRx経由を避ける）
+        f"videoconvert ! video/x-raw,format=NV12 ! "
+        # 4) CPUメモリ→NVMM（Jetson専用）に乗せ替え
+        f"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "
+        # 5) HWエンコード
+        f"nvv4l2h264enc bitrate={bitrate_bps} preset-level=4 insert-sps-pps=true "
+        f"iframeinterval={args.fps*2} control-rate=1 maxperf-enable=1 ! "
+        # 6) RTMP向け：定期的にSPS/PPSを流し、FLVに格納
+        f"h264parse config-interval=1 ! flvmux streamable=true ! "
+        # 7) YouTubeへ。sync=falseで詰まり防止
+        f"rtmpsink location='{youtube_url}' sync=false"
     )
 
     print("\nGStreamerパイプラインを起動しています...")
