@@ -24,6 +24,10 @@ NVIDIA Jetson向けに最適化された顔モザイク処理実装（YouTube配
     - 通常のcv2.VideoCapture()でRTSPストリームをデコード
     - GStreamer (nvv4l2h264enc) によるハードウェアエンコード（CPU負荷削減）
     - プレビューウィンドウなし（リソース節約、YouTube配信に最適）
+
+
+テストコマンド
+    gst-launch-1.0 -v videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! video/x-raw,format=BGRx ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc bitrate=2500000 insert-sps-pps=true ! h264parse ! flvmux ! rtmpsink location='rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx'
 """
 
 import cv2
