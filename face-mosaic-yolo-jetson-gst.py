@@ -27,7 +27,7 @@ NVIDIA Jetson向けに最適化された顔モザイク処理実装（YouTube配
 
 
 テストコマンド
-    gst-launch-1.0 -v videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! video/x-raw,format=BGRx ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc bitrate=2500000 insert-sps-pps=true ! h264parse ! flvmux ! rtmpsink location='rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx'
+    gst-launch-1.0 -v videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! video/x-raw,format=BGRx ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc bitrate=2500000 insert-sps-pps=true ! h264parse ! flvmux ! rtmpsink location='rtmps://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx'
 """
 
 import cv2
@@ -144,7 +144,7 @@ def parse_arguments():
   %(prog)s "rtsp://camera/stream" "your-stream-key" --model yolov8s.pt --confidence 0.6
   %(prog)s "rtsp://camera/stream" "your-stream-key" --width 1920 --height 1080 --fps 30
 
-配信先: rtmp://a.rtmp.youtube.com/live2 (YouTube Live固定)
+配信先: rtmps://a.rtmp.youtube.com/live2 (YouTube Live固定)
 エンコーダー: GStreamer (nvv4l2h264enc)
 """
     )
@@ -191,13 +191,13 @@ def parse_arguments():
 def main():
     args = parse_arguments()
     
-    youtube_url = f"rtmp://a.rtmp.youtube.com/live2/{args.stream_key}"
+    youtube_url = f"rtmps://a.rtmp.youtube.com/live2/{args.stream_key}"
     
     print("=" * 70)
     print("監視カメラ映像の顔モザイク処理（YouTube配信専用版 - GStreamer HWエンコード）")
     print("=" * 70)
     print(f"入力: {args.rtsp_url}")
-    print(f"出力: rtmp://a.rtmp.youtube.com/live2/****")
+    print(f"出力: rtmps://a.rtmp.youtube.com/live2/****")
     print(f"解像度: {args.width}x{args.height} @ {args.fps}fps")
     print(f"ビットレート: {args.bitrate} kbps")
     print(f"モデル: {args.model}")
