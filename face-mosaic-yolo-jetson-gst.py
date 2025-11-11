@@ -286,10 +286,12 @@ def main():
     
     gst_pipeline = (
         f"appsrc ! "
-        f"video/x-raw,format=BGR ! "
-        f"nvvideoconvert ! "
-        f"video/x-raw(memory:NVMM),format=NV12 ! " # NV12フォーマットを使用
-        f"nvv4l2h264enc "
+        f"video/x-raw,format=BGR ! "                # 1. OpenCVから BGR (CPUメモリ)
+        f"videoconvert ! "                          # 2. CPUで色空間変換 (BGR -> BGRx)
+        f"video/x-raw,format=BGRx ! "               #    (VICが扱える4ch形式にする)
+        f"nvvideoconvert ! "                        # 3. NVMMメモリへ転送＆変換 (BGRx -> NV12)
+        f"video/x-raw(memory:NVMM),format=NV12 ! "  # 4. nvv4l2h264enc が要求する NVMM上のNV12
+        f"nvv4l2h264enc "                           # 5. ハードウェアエンコード
         f"bitrate={bitrate_bps} "
         f"preset-level=4 " # 4 = UltraFastPreset (低遅延)
         f"insert-sps-pps=true ! " # SPS/PPSをストリームに含める
