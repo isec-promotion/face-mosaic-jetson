@@ -27,7 +27,7 @@ NVIDIA Jetson向けに最適化された顔モザイク処理実装（YouTube配
 
 
 テストコマンド
-    gst-launch-1.0 -v videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! video/x-raw,format=BGRx ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc bitrate=2500000 insert-sps-pps=true ! h264parse ! flvmux ! rtmpsink location='rtmps://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx'
+    gst-launch-1.0 -v videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! video/x-raw,format=BGRx ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc bitrate=2500000 insert-sps-pps=true ! h264parse ! flvmux ! rtmpsink location='rtmps://a.rtmps.youtube.com:443/live2/xxxx-xxxx-xxxx-xxxx-xxxx'
 """
 
 import cv2
@@ -38,6 +38,7 @@ import argparse
 import threading
 from time import perf_counter, sleep, time
 from collections import deque
+from urllib.parse import urlparse, urlunparse
 
 try:
     from ultralytics import YOLO
@@ -105,6 +106,7 @@ class ThreadedVideoCapture:
         if self.thread.is_alive():
             self.thread.join(timeout=2)
 
+
 def apply_mosaic(image, x, y, w, h, ratio=0.05):
     """
     指定された領域にモザイク処理を適用
@@ -133,20 +135,21 @@ def apply_mosaic(image, x, y, w, h, ratio=0.05):
     
     return image
 
+
 def parse_arguments():
     """コマンドライン引数を解析"""
     parser = argparse.ArgumentParser(
         description='監視カメラ映像の顔モザイク処理（YouTube配信専用版 - GStreamer HWエンコード）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-例:
-  %(prog)s "rtsp://admin:password@192.168.1.100:554/stream" "xxxx-xxxx-xxxx-xxxx"
-  %(prog)s "rtsp://camera/stream" "your-stream-key" --model yolov8s.pt --confidence 0.6
-  %(prog)s "rtsp://camera/stream" "your-stream-key" --width 1920 --height 1080 --fps 30
+        例:
+        %(prog)s "rtsp://admin:password@192.168.1.100:554/stream" "xxxx-xxxx-xxxx-xxxx"
+        %(prog)s "rtsp://camera/stream" "your-stream-key" --model yolov8s.pt --confidence 0.6
+        %(prog)s "rtsp://camera/stream" "your-stream-key" --width 1920 --height 1080 --fps 30
 
-配信先: rtmps://a.rtmp.youtube.com/live2 (YouTube Live固定)
-エンコーダー: GStreamer (nvv4l2h264enc)
-"""
+        配信先: rtmps://a.rtmps.youtube.com:443/live2 (YouTube Live固定)
+        エンコーダー: GStreamer (nvv4l2h264enc)
+        """
     )
     
     parser.add_argument('rtsp_url', 
@@ -188,16 +191,78 @@ def parse_arguments():
     
     return parser.parse_args()
 
+
+def build_youtube_url(stream_key_or_url: str) -> str:
+    """YouTube Live配信URLを正規化して返す"""
+    value = (stream_key_or_url or "").strip()
+    if not value:
+        raise ValueError("YouTubeのストリームキーまたはURLを指定してください")
+
+    normalized = value.lower()
+    if normalized.startswith(("rtmp://", "rtmps://")):
+        parsed = urlparse(value)
+        hostname = parsed.hostname or "a.rtmps.youtube.com"
+
+        if hostname.endswith(".rtmp.youtube.com"):
+            hostname = hostname.replace(".rtmp.youtube.com", ".rtmps.youtube.com")
+        elif hostname == "rtmp.youtube.com":
+            hostname = "rtmps.youtube.com"
+
+        userinfo = ""
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f":{parsed.password}"
+            userinfo += "@"
+
+        netloc = f"{userinfo}{hostname}:443"
+        path = parsed.path or ""
+        if not path or path == "/":
+            path = "/live2/"
+        else:
+            if not path.startswith("/"):
+                path = f"/{path}"
+            lower_path = path.lower()
+            if lower_path.endswith("/live2"):
+                path = f"{path}/"
+            elif "/live2/" not in lower_path:
+                if not path.endswith("/"):
+                    path = f"{path}/"
+                path = f"{path}live2/"
+
+        return urlunparse((
+            "rtmps",
+            netloc,
+            path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment
+        ))
+
+    return f"rtmps://a.rtmps.youtube.com:443/live2/{value}"
+
+
+def mask_youtube_url(url: str) -> str:
+    """配信用URLを表示するときにストリームキーを伏せる"""
+    marker = "/live2/"
+    if marker in url:
+        prefix, _ = url.split(marker, 1)
+        return f"{prefix}{marker}****"
+    if "/" in url:
+        return url.rsplit("/", 1)[0] + "/****"
+    return url
+
+
 def main():
     args = parse_arguments()
     
-    youtube_url = f"rtmps://a.rtmp.youtube.com/live2/{args.stream_key}"
+    youtube_url = build_youtube_url(args.stream_key)
     
     print("=" * 70)
     print("監視カメラ映像の顔モザイク処理（YouTube配信専用版 - GStreamer HWエンコード）")
     print("=" * 70)
     print(f"入力: {args.rtsp_url}")
-    print(f"出力: rtmps://a.rtmp.youtube.com/live2/****")
+    print(f"出力: {mask_youtube_url(youtube_url)}")
     print(f"解像度: {args.width}x{args.height} @ {args.fps}fps")
     print(f"ビットレート: {args.bitrate} kbps")
     print(f"モデル: {args.model}")
@@ -282,21 +347,23 @@ def main():
     print("ハードウェアエンコーダー（nvv4l2h264enc）を使用します")
     
     # GStreamerパイプラインの構築
-    # appsrc (OpenCVからBGR) -> videoconvert (BGR->I420/NV12)
-    # -> nvv4l2h264enc (HWエンコード) -> h264parse (H.264解析)
-    # -> flvmux (FLVコンテナ化) -> rtmpsink (YouTubeへ送信)
+    # appsrc (OpenCVからBGR) -> videoconvert (BGR->RGBA)
+    # -> nvvideoconvert (NV12 + memory:NVMM) -> nvv4l2h264enc (HWエンコード)
+    # -> h264parse -> queue (逆圧対策) -> flvmux (FLVコンテナ化) -> rtmpsink (YouTubeへ送信)
     
-    bitrate_bps = args.bitrate * 1000 # kbps を bps に変換
+    bitrate_bps = args.bitrate * 1000  # kbps を bps に変換
     
     gst_pipeline = (
-        f"appsrc is-live=true do-timestamp=true format=time ! "
+        "appsrc is-live=true do-timestamp=true format=time block=false ! "
         f"video/x-raw,format=BGR,width={args.width},height={args.height},framerate={args.fps}/1 ! "
-        f"videoconvert ! video/x-raw,format=RGBA ! "
-        f"nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
+        "videoconvert ! video/x-raw,format=RGBA ! "
+        "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
         f"nvv4l2h264enc bitrate={bitrate_bps} preset-level=4 insert-sps-pps=true "
         f"iframeinterval={args.fps*2} control-rate=1 maxperf-enable=1 ! "
-        f"h264parse config-interval=1 ! flvmux streamable=true ! "
-        f"rtmpsink location='{youtube_url}' sync=false"
+        "h264parse config-interval=1 ! "
+        "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! "
+        "flvmux streamable=true ! "
+        f"rtmpsink location='{youtube_url}' sync=false async=false"
     )
 
     print("\nGStreamerパイプラインを起動しています...")
@@ -306,7 +373,7 @@ def main():
     out = cv2.VideoWriter(
         gst_pipeline,
         cv2.CAP_GSTREAMER,
-        0, # CAP_GSTREAMERの場合、fourccは0でOK
+        0,  # CAP_GSTREAMERの場合、fourccは0でOK
         args.fps,
         (args.width, args.height)
     )
@@ -393,7 +460,6 @@ def main():
             
             total_detections += len(detected_heads)
             
-            # --- 修正箇所: FFmpegへの書き込み -> GStreamer (VideoWriter) への書き込み ---
             try:
                 out.write(frame)
             except Exception as e:
@@ -401,7 +467,6 @@ def main():
                 print(f"\n警告: GStreamerへのフレーム送信中にエラーが発生しました: {e}")
                 print("パイプラインが切断された（ストリームキーが不正、ネットワーク切断など）可能性があります。")
                 break
-            # --- 修正ここまで ---
             
             frame_count += 1
             # 100フレームごとに進捗状況を表示
@@ -423,13 +488,12 @@ def main():
         print("リソースを解放しています...")
         cap.stop()
         
-        # --- 修正箇所: FFmpegの終了処理 -> VideoWriterの解放 ---
         if out and out.isOpened():
             print("GStreamerパイプラインを解放しています...")
             out.release()
-        # --- 修正ここまで ---
         
         print("完了しました")
+
 
 if __name__ == "__main__":
     main()
