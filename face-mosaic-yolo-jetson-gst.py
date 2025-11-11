@@ -30,15 +30,44 @@ NVIDIA Jetson向けに最適化された顔モザイク処理実装（YouTube配
     gst-launch-1.0 -v videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! video/x-raw,format=BGRx ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc bitrate=2500000 insert-sps-pps=true ! h264parse ! flvmux ! rtmpsink location='rtmps://a.rtmps.youtube.com:443/live2/xxxx-xxxx-xxxx-xxxx-xxxx'
 """
 
+import os
+import sys
+import warnings
+
+# 警告抑制とヘッドレス化の設定（import前に実行）
+os.environ["MPLBACKEND"] = "Agg"
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
+# Matplotlib由来の警告を無効化
+warnings.filterwarnings("ignore", module="matplotlib")
+warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+
+# Requests の依存警告を抑制
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except (ImportError, AttributeError):
+    pass
+
+try:
+    from requests.packages.urllib3.exceptions import InsecureRequestWarning
+    warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+except ImportError:
+    pass
+
 import cv2
 import numpy as np
-import subprocess
-import sys
 import argparse
 import threading
 from time import perf_counter, sleep, time
 from collections import deque
 from urllib.parse import urlparse, urlunparse
+
+# OpenCVログレベルを抑制
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except AttributeError:
+    pass
 
 try:
     from ultralytics import YOLO
@@ -47,8 +76,6 @@ except ImportError:
     print("以下のコマンドでインストールしてください:")
     print("  pip install ultralytics")
     sys.exit(1)
-
-# GStreamer版では log_ffmpeg_output は不要
 
 
 class ThreadedVideoCapture:
@@ -60,7 +87,7 @@ class ThreadedVideoCapture:
         self.src = src
         self.cap = cv2.VideoCapture(self.src)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, max_queue_size)
-        
+
         self.q = deque(maxlen=max_queue_size)
         self.status = "stopped"
         self.thread = threading.Thread(target=self._update, daemon=True)
@@ -73,19 +100,19 @@ class ThreadedVideoCapture:
                 print("[ThreadedVideoCapture] フレーム取得失敗。再接続試行...")
                 self.cap.release()
                 sleep(1)
-                
+
                 # 保存したURLで再接続
                 self.cap = cv2.VideoCapture(self.src)
                 self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                
+
                 if not self.cap.isOpened():
                     print("[ThreadedVideoCapture] 再接続失敗。1秒後にリトライ...")
                     sleep(1)
-                
+
                 continue
-            
+
             self.q.append(frame)
-        
+
         print("[ThreadedVideoCapture] 読み取りスレッドを停止")
         self.cap.release()
 
@@ -116,23 +143,23 @@ def apply_mosaic(image, x, y, w, h, ratio=0.05):
     y = max(0, y)
     w = min(w, image.shape[1] - x)
     h = min(h, image.shape[0] - y)
-    
+
     if w <= 0 or h <= 0:
         return image
-    
+
     face_img = image[y:y+h, x:x+w]
-    
+
     if face_img.size == 0:
         return image
-    
+
     # 縮小してから拡大
-    small = cv2.resize(face_img, None, fx=ratio, fy=ratio, 
+    small = cv2.resize(face_img, None, fx=ratio, fy=ratio,
                        interpolation=cv2.INTER_NEAREST)
-    mosaic = cv2.resize(small, (w, h), 
+    mosaic = cv2.resize(small, (w, h),
                         interpolation=cv2.INTER_NEAREST)
-    
+
     image[y:y+h, x:x+w] = mosaic
-    
+
     return image
 
 
@@ -151,8 +178,8 @@ def parse_arguments():
         エンコーダー: GStreamer (nvv4l2h264enc)
         """
     )
-    
-    parser.add_argument('rtsp_url', 
+
+    parser.add_argument('rtsp_url',
                         help='監視カメラのRTSPストリームURL')
     parser.add_argument('stream_key',
                         help='YouTubeライブストリーミングキー')
@@ -168,7 +195,6 @@ def parse_arguments():
                         type=int,
                         default=30,
                         help='フレームレート (デフォルト: 30)')
-    # ビットレートを引数に追加（GStreamer設定用）
     parser.add_argument('--bitrate', '-b',
                         type=int,
                         default=2500,
@@ -188,7 +214,7 @@ def parse_arguments():
     parser.add_argument('--no-tensorrt',
                         action='store_true',
                         help='TensorRT変換をスキップしてPyTorchモデルを使用')
-    
+
     return parser.parse_args()
 
 
@@ -255,9 +281,9 @@ def mask_youtube_url(url: str) -> str:
 
 def main():
     args = parse_arguments()
-    
+
     youtube_url = build_youtube_url(args.stream_key)
-    
+
     print("=" * 70)
     print("監視カメラ映像の顔モザイク処理（YouTube配信専用版 - GStreamer HWエンコード）")
     print("=" * 70)
@@ -268,24 +294,22 @@ def main():
     print(f"モデル: {args.model}")
     print(f"検出パラメータ: confidence={args.confidence}, head_ratio={args.head_ratio}")
     print("=" * 70)
-    
-    # --- YOLOv8モデルの読み込み（TensorRT最適化対応） ---
-    # (変更なし)
-    import os
+
+    # YOLOv8モデルの読み込み（TensorRT最適化対応）
     import torch
-    
+
     cuda_available = torch.cuda.is_available()
     if not cuda_available:
         print("警告: CUDAが利用できません")
         print("TensorRT変換をスキップし、PyTorchモデルを使用します")
-    
+
     device_name = torch.cuda.get_device_name(0).replace(' ', '_') if cuda_available else 'cpu'
     base_name = args.model.replace('.pt', '')
     engine_file = f"{base_name}_{device_name}.engine"
-    
+
     model = None
     model_type = None
-    
+
     if os.path.exists(engine_file):
         print(f"TensorRTエンジンファイル（{engine_file}）が見つかりました")
         print("TensorRTエンジンを読み込んでいます...")
@@ -296,13 +320,13 @@ def main():
         except Exception as e:
             print(f"警告: TensorRTエンジンの読み込みに失敗しました: {e}")
             print("PyTorchモデルを使用します")
-    
+
     if model is None:
         print(f"PyTorchモデル（{args.model}）を読み込んでいます...")
         try:
             model = YOLO(args.model)
             print("PyTorchモデルの読み込みが完了しました")
-            
+
             if not cuda_available:
                 print("\nCUDAが利用できないため、TensorRT変換をスキップします")
                 model_type = 'PyTorch (CPU)'
@@ -315,16 +339,16 @@ def main():
                 try:
                     model.export(format='engine', half=True, device=0)
                     default_engine = args.model.replace('.pt', '.engine')
-                    
+
                     if os.path.exists(default_engine) and default_engine != engine_file:
                         print(f"\nエンジンファイルを {default_engine} から {engine_file} にリネームしています...")
                         os.rename(default_engine, engine_file)
-                    
+
                     print(f"\n変換が完了しました。TensorRTエンジン（{engine_file}）を読み込んでいます...")
                     model = YOLO(engine_file, task='detect')
                     model_type = 'TensorRT'
                     print("TensorRTエンジンでの実行準備が完了しました")
-                    
+
                 except Exception as e:
                     print(f"\n警告: TensorRTへの変換に失敗しました: {e}")
                     print("PyTorchモデルをそのまま使用します")
@@ -332,48 +356,43 @@ def main():
         except Exception as e:
             print(f"エラー: モデルの読み込みに失敗しました: {e}")
             sys.exit(1)
-    
+
     print(f"使用するモデル形式: {model_type}")
     print("=" * 70)
-    
+
     # RTSPストリームを開く（スレッド化）
     print("RTSPストリームに接続しています（スレッド読み取り）...")
     cap = ThreadedVideoCapture(args.rtsp_url).start()
     sleep(2)
     print("接続成功")
-    
-    # --- 修正箇所: FFmpeg から GStreamer (cv2.VideoWriter) へ ---
-    
+
+    # GStreamerパイプラインの構築（堅牢化版）
     print("ハードウェアエンコーダー（nvv4l2h264enc）を使用します")
-    
-    # GStreamerパイプラインの構築
-    # appsrc (OpenCVからBGR) -> videoconvert (BGR->RGBA)
-    # -> nvvideoconvert (NV12 + memory:NVMM) -> nvv4l2h264enc (HWエンコード)
-    # -> h264parse -> queue (逆圧対策) -> flvmux (FLVコンテナ化) -> rtmpsink (YouTubeへ送信)
-    
-    bitrate_bps = args.bitrate * 1000  # kbps を bps に変換
-    
+
+    bitrate_bps = args.bitrate * 1000
+
     gst_pipeline = (
-        "appsrc is-live=true do-timestamp=true format=time block=false ! "
+        "appsrc is-live=true block=true format=time do-timestamp=true ! "
         f"video/x-raw,format=BGR,width={args.width},height={args.height},framerate={args.fps}/1 ! "
+        "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=0 ! "
         "videoconvert ! video/x-raw,format=RGBA ! "
+        "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=0 ! "
         "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
         f"nvv4l2h264enc bitrate={bitrate_bps} preset-level=4 insert-sps-pps=true "
-        f"iframeinterval={args.fps*2} control-rate=1 maxperf-enable=1 ! "
-        "h264parse config-interval=1 ! "
+        f"iframeinterval={args.fps*2} control-rate=1 maxperf-enable=1 profile=high ! "
+        "h264parse config-interval=1 ! video/x-h264,stream-format=byte-stream,alignment=au ! "
         "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! "
         "flvmux streamable=true ! "
         f"rtmpsink location='{youtube_url}' sync=false async=false"
     )
 
     print("\nGStreamerパイプラインを起動しています...")
-    print(f"パイプライン: appsrc ! ... ! rtmpsink location=...")
 
     # GStreamerバックエンドを指定してVideoWriterを作成
     out = cv2.VideoWriter(
         gst_pipeline,
         cv2.CAP_GSTREAMER,
-        0,  # CAP_GSTREAMERの場合、fourccは0でOK
+        0,
         args.fps,
         (args.width, args.height)
     )
@@ -384,114 +403,107 @@ def main():
         print("="*50)
         print("以下の点を確認してください:")
         print(" 1. GStreamerの依存関係がインストールされているか")
-        print(" 　（例: gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly）")
         print(" 2. JetsonのマルチメディアAPIがインストールされているか")
-        print(" 　（例: gstreamer1.0-libav, gstreamer1.0-tools, libgstreamer-plugins-base1.0-dev）")
         print(" 3. OpenCVがGStreamerサポート付きでビルドされているか")
-        print(" 4. 'nvv4l2h264enc' が利用可能か（ターミナルで `gst-inspect-1.0 nvv4l2h264enc` を実行）")
+        print(" 4. 'nvv4l2h264enc' が利用可能か")
+        print("    確認: gst-inspect-1.0 nvv4l2h264enc")
         cap.stop()
         sys.exit(1)
 
-    # (FFmpegサブプロセスとログスレッドは不要)
-    
     print("\nYouTube Liveへのストリーミングを開始しました")
     print("YouTube Studio (https://studio.youtube.com) で配信状況を確認してください")
     print("※配信が開始されるまで数秒〜数十秒かかる場合があります\n")
-    
-    # --- 修正ここまで ---
 
     frame_count = 0
     total_detections = 0
     start_time = time()
-    skipped_frames = 0
-    
+
     try:
         print("処理を開始します（Ctrl+Cで終了）")
         print("GStreamerパイプラインで配信中...\n")
-        
+
         while True:
             frame = cap.read()
-            
+
             if frame is None:
                 sleep(0.01)
                 continue
-            
+
             # フレームを指定された解像度にリサイズ
             frame = cv2.resize(frame, (args.width, args.height))
-            
+
             # YOLOv8で人物検出
             results = model(
-                frame, 
+                frame,
                 classes=[0],
                 conf=args.confidence,
                 verbose=False
             )
-            
+
             detected_heads = []
-            
+
             # 検出結果から頭部領域を計算
             for result in results:
                 boxes = result.boxes
                 for box in boxes:
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                    
+
                     person_w = x2 - x1
                     person_h = y2 - y1
-                    
+
                     # 小さすぎる検出や不自然なアスペクト比を除外
                     if person_w < 30 or person_h < 50:
                         continue
                     aspect_ratio = person_w / person_h if person_h > 0 else 0
                     if aspect_ratio < 0.2 or aspect_ratio > 3.0:
                         continue
-                    
+
                     # 頭部領域を推定
                     head_h = int(person_h * args.head_ratio)
                     head_x = max(0, x1 - int(person_w * 0.1))
                     head_y = max(0, y1 - int(head_h * 0.1))
                     head_w = min(args.width - head_x, person_w + int(person_w * 0.2))
                     head_h = min(args.height - head_y, head_h + int(head_h * 0.2))
-                    
+
                     detected_heads.append((head_x, head_y, head_w, head_h))
-            
+
             # モザイクを適用
             for (x, y, w, h) in detected_heads:
                 frame = apply_mosaic(frame, x, y, w, h, ratio=0.05)
-            
+
             total_detections += len(detected_heads)
-            
+
             try:
                 out.write(frame)
             except Exception as e:
-                # GStreamerパイプラインが切断された場合など
                 print(f"\n警告: GStreamerへのフレーム送信中にエラーが発生しました: {e}")
-                print("パイプラインが切断された（ストリームキーが不正、ネットワーク切断など）可能性があります。")
+                print("パイプラインが切断された可能性があります。")
                 break
-            
+
             frame_count += 1
             # 100フレームごとに進捗状況を表示
             if frame_count % 100 == 0:
                 elapsed_time = time() - start_time
                 actual_fps = frame_count / elapsed_time
                 avg_detections = total_detections / frame_count
-                
+
                 print(f"処理済み: {frame_count}フレーム | "
                       f"検出数: {len(detected_heads)} | "
                       f"平均検出: {avg_detections:.2f} | "
                       f"実FPS: {actual_fps:.1f} (目標: {args.fps})")
-                      
+
     except KeyboardInterrupt:
         print("\n\nキーボード割り込みを検出しました。終了します...")
-    
+
     finally:
         # クリーンアップ
         print("リソースを解放しています...")
         cap.stop()
-        
+
         if out and out.isOpened():
             print("GStreamerパイプラインを解放しています...")
             out.release()
-        
+
         print("完了しました")
 
 
