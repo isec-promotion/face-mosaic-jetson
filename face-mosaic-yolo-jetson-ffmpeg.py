@@ -350,12 +350,12 @@ def main():
         '-fflags', '+genpts',
         '-vsync', 'cfr',
         
-        # --- ハードウェアエンコーダー (V4L2 M2M) 設定 ---
-        '-c:v', 'h264_v4l2m2m',
+        # --- ハードウェアエンコーダー設定 (h264_omx) ---
+        '-c:v', 'h264_omx',
         '-b:v', '2500k',
         '-maxrate', '2500k',
         '-bufsize', '5000k',
-        '-g', str(args.fps * 2),
+        '-g', str(args.fps * 2),  # キーフレーム間隔（2秒おき）
         '-pix_fmt', 'yuv420p',
         # --- 設定ここまで ---
         
