@@ -285,10 +285,10 @@ def main():
     bitrate_bps = args.bitrate * 1000 # kbps を bps に変換
     
     gst_pipeline = (
-        f"appsrc ! "
-        f"video/x-raw,format=BGR ! " # OpenCVからの入力フォーマット
-        f"videoconvert ! "
-        f"video/x-raw,format=I420 ! " # nvv4l2h264enc が要求するフォーマット
+f"appsrc ! "
+        f"video/x-raw,format=BGR ! " # OpenCV (CPUメモリ) からの入力フォーマット
+        f"nvvideoconvert ! "         # CPUメモリからNVMMメモリへ転送＆色空間変換
+        f"video/x-raw(memory:NVMM),format=I420 ! " # NVMMメモリ上のI420を指定
         f"nvv4l2h264enc "
         f"bitrate={bitrate_bps} "
         f"preset-level=4 " # 4 = UltraFastPreset (低遅延)
