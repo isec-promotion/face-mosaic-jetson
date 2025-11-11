@@ -393,7 +393,7 @@ def main():
         "videoconvert ! video/x-raw,format=BGRx ! "
         f"{nvconv} ! video/x-raw(memory:NVMM),format=NV12 ! "
         f"nvv4l2h264enc bitrate={bitrate_bps} insert-sps-pps=true iframeinterval={args.fps*2} control-rate=1 ! "
-        "h264parse config-interval=1 ! video/x-h264,stream-format=byte-stream,alignment=au ! "
+        "h264parse config-interval=1 ! "
         "flvmux streamable=true ! "
         f"rtmpsink location='{youtube_url}' sync=false async=false"
     )
