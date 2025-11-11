@@ -6,23 +6,23 @@ NVIDIA Jetson向けに最適化された顔モザイク処理実装（YouTube配
 - YOLOv8による高精度人物検出
 - TensorRT推論エンジン（自動変換・FP16精度）
 - 通常のRTSPデコード（GStreamer不使用）
-- ハードウェアエンコード（NVENC）
+- ソフトウェアエンコード（libx264）
 - プレビューウィンドウなし（配信専用）
 
 技術ブログ用のリファレンス実装です。
 
 使用方法:
-    python face-mosaic-yolo-jetson-ffmpeg.py <rtsp_url> <stream_key> [options]
+    python face-mosaic-yolo-jetson-x264.py <rtsp_url> <stream_key> [options]
 
 例:
-    python face-mosaic-yolo-jetson-ffmpeg.py "rtsp://admin:password@192.168.1.100:554/stream" "xxxx-xxxx-xxxx-xxxx"
-    python face-mosaic-yolo-jetson-ffmpeg.py "rtsp://camera/stream" "your-stream-key" --model yolov8s.pt --confidence 0.6
+    python face-mosaic-yolo-jetson-x264.py "rtsp://admin:password@192.168.1.100:554/stream" "xxxx-xxxx-xxxx-xxxx"
+    python face-mosaic-yolo-jetson-x264.py "rtsp://camera/stream" "your-stream-key" --model yolov8s.pt --confidence 0.6
 
 機能:
     - 初回実行時に自動的にTensorRTエンジン（.engine）を生成
     - 2回目以降は高速なTensorRTエンジンを使用
     - 通常のcv2.VideoCapture()でRTSPストリームをデコード（GStreamer不要）
-    - NVENCによるハードウェアエンコード（CPU負荷削減）
+    - ソフトウェアエンコード（libx264）
     - プレビューウィンドウなし（リソース節約、YouTube配信に最適）
 """
 

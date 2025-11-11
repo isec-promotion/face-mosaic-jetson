@@ -350,11 +350,14 @@ def main():
         '-fflags', '+genpts',
         '-vsync', 'cfr',
         
-        # --- Jetson向けハードウェアエンコーダー設定 ---
-        '-c:v', 'h264_nvmpi',  # Jetsonハードウェアエンコーダー
-        '-profile:v', 'high',  # H.264プロファイル
-        '-level', '4.2',  # H.264レベル
-        # --- エンコーダー設定ここまで ---
+        # --- ハードウェアエンコーダー (V4L2 M2M) 設定 ---
+        '-c:v', 'h264_v4l2m2m',
+        '-b:v', '2500k',
+        '-maxrate', '2500k',
+        '-bufsize', '5000k',
+        '-g', str(args.fps * 2),
+        '-pix_fmt', 'yuv420p',
+        # --- 設定ここまで ---
         
         '-b:v', '2500k',
         '-maxrate', '2500k', # -b:v と同じ値にすることでCBRに近づける
