@@ -87,6 +87,10 @@ class ThreadedVideoCapture:
         self.src = src
         self.cap = cv2.VideoCapture(self.src)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, max_queue_size)
+        
+        # --- 【追加】FPSを取得して保持 ---
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        # -----------------------------
 
         self.q = deque(maxlen=max_queue_size)
         self.status = "stopped"
@@ -137,6 +141,17 @@ class ThreadedVideoCapture:
 def apply_mosaic(image, x, y, w, h, ratio=0.05):
     """
     指定された領域にモザイク処理を適用
+    
+    Args:
+        image: 入力画像（BGR形式）
+        x: モザイク領域の左上X座標
+        y: モザイク領域の左上Y座標
+        w: モザイク領域の幅
+        h: モザイク領域の高さ
+        ratio: モザイクの縮小率（デフォルト: 0.05）
+    
+    Returns:
+        モザイク適用後の画像
     """
     # 境界チェック
     x = max(0, x)
@@ -161,6 +176,103 @@ def apply_mosaic(image, x, y, w, h, ratio=0.05):
     image[y:y+h, x:x+w] = mosaic
 
     return image
+
+class FrameInterpolator:
+    """
+    フレームレート補間クラス
+    ソースFPSが目標FPSより低い場合、フレームを補間して目標FPSに水増しする
+    """
+    def __init__(self, source_fps, target_fps, method='linear'):
+        """
+        フレーム補間器を初期化
+        
+        Args:
+            source_fps: ソース映像のFPS
+            target_fps: 目標FPS
+            method: 補間方法 ('duplicate': フレーム複製, 'linear': 線形補間)
+        """
+        self.sourceFps = source_fps
+        self.targetFps = target_fps
+        self.method = method
+        
+        # 補間が必要かどうかを判定
+        self.needsInterpolation = source_fps > 0 and source_fps < target_fps
+        
+        if self.needsInterpolation:
+            # 1つのソースフレームから生成するフレーム数
+            self.framesPerSource = target_fps / source_fps
+            # 前のフレームを保持（線形補間用）
+            self.prevFrame = None
+            
+            print(f"[FrameInterpolator] 補間を有効化: {source_fps}fps -> {target_fps}fps")
+            print(f"[FrameInterpolator] 補間方法: {method}")
+            print(f"[FrameInterpolator] 1ソースフレームあたり {self.framesPerSource:.2f} フレームを生成")
+        else:
+            print(f"[FrameInterpolator] 補間不要: ソースFPS({source_fps}) >= 目標FPS({target_fps})")
+    
+    def interpolate(self, currentFrame):
+        """
+        現在のフレームから補間フレームを生成
+        
+        Args:
+            currentFrame: 現在のフレーム（BGR形式、numpy配列）
+        
+        Returns:
+            補間されたフレームのリスト（空の場合は補間不要）
+        """
+        if not self.needsInterpolation or currentFrame is None:
+            return [currentFrame] if currentFrame is not None else []
+        
+        interpolatedFrames = []
+        
+        if self.method == 'duplicate':
+            # フレーム複製方式：各フレームを複数回送信
+            numFrames = int(round(self.framesPerSource))
+            for _ in range(numFrames):
+                interpolatedFrames.append(currentFrame.copy())
+        
+        elif self.method == 'linear':
+            # 線形補間方式：前のフレームと現在のフレームをブレンド
+            if self.prevFrame is None:
+                # 最初のフレームはそのまま複数回送信（前のフレームがないため）
+                numFrames = int(round(self.framesPerSource))
+                for _ in range(numFrames):
+                    interpolatedFrames.append(currentFrame.copy())
+                # 前のフレームとして保存
+                self.prevFrame = currentFrame.copy()
+            else:
+                # 前のフレームと現在のフレームの間を補間
+                # 例: 10fps -> 30fps の場合、1ソースフレームあたり3フレーム生成
+                # 最初のフレーム: 前のフレーム100%、現在のフレーム0%（前回の最後のフレームと同じ）
+                # 中間のフレーム: 前のフレームと現在のフレームをブレンド
+                # 最後のフレーム: 前のフレーム0%、現在のフレーム100%
+                numFrames = int(round(self.framesPerSource))
+                
+                for i in range(numFrames):
+                    if i == 0:
+                        # 最初のフレームは前のフレーム（前回の最後のフレームと同じ）
+                        interpolatedFrames.append(self.prevFrame.copy())
+                    elif i == numFrames - 1:
+                        # 最後のフレームは現在のフレーム
+                        interpolatedFrames.append(currentFrame.copy())
+                    else:
+                        # 中間フレーム: 補間比率を計算（0.0 = 前のフレーム、1.0 = 現在のフレーム）
+                        alpha = i / (numFrames - 1)
+                        
+                        # フレームをブレンド
+                        blended = cv2.addWeighted(
+                            self.prevFrame, 
+                            1.0 - alpha, 
+                            currentFrame, 
+                            alpha, 
+                            0
+                        )
+                        interpolatedFrames.append(blended)
+                
+                # 前のフレームを更新
+                self.prevFrame = currentFrame.copy()
+        
+        return interpolatedFrames
 
 
 def parse_arguments():
@@ -214,6 +326,8 @@ def parse_arguments():
     parser.add_argument('--no-tensorrt',
                         action='store_true',
                         help='TensorRT変換をスキップしてPyTorchモデルを使用')
+    parser.add_argument('--interpolate-fps', type=int, default=30, help='フレーム補間の目標FPS（ソースFPSがこの値より低い場合に補間）')
+    parser.add_argument('--interpolation-method', choices=['duplicate', 'linear'], default='linear', help='フレーム補間方法（duplicate: 複製, linear: 線形補間）')
 
     return parser.parse_args()
 
@@ -289,7 +403,7 @@ def main():
     print("=" * 70)
     print(f"入力: {args.rtsp_url}")
     print(f"出力: {mask_youtube_url(youtube_url)}")
-    print(f"解像度: {args.width}x{args.height} @ {args.fps}fps")
+    print(f"解像度: {args.width}x{args.height} @ {args.fps}fps (初期値、FPS検出後に更新)")
     print(f"ビットレート: {args.bitrate} kbps")
     print(f"モデル: {args.model}")
     print(f"検出パラメータ: confidence={args.confidence}, head_ratio={args.head_ratio}")
@@ -362,9 +476,49 @@ def main():
 
     # RTSPストリームを開く（スレッド化）
     print("RTSPストリームに接続しています（スレッド読み取り）...")
-    cap = ThreadedVideoCapture(args.rtsp_url).start()
+    
+    # まずインスタンスを作成（まだスレッドは開始しない）
+    cap = ThreadedVideoCapture(args.rtsp_url)
+    
+    # FPS情報の取得
+    source_fps = cap.fps
+    print(f"検出されたソースFPS: {source_fps}")
+    
+    # フレーム補間の判定
+    interpolateTargetFps = args.interpolate_fps
+    useInterpolation = source_fps > 0 and source_fps < interpolateTargetFps
+    
+    if useInterpolation:
+        # フレーム補間を使用する場合、目標FPSは補間目標FPS
+        target_fps = interpolateTargetFps
+        print(f"-> 適用FPS: {target_fps} (フレーム補間: {source_fps}fps -> {target_fps}fps)")
+    elif source_fps > 0 and source_fps < 120:
+        # 補間不要で、ソースFPSが有効な場合
+        target_fps = source_fps
+        # 整数に近い場合は丸める (29.97 -> 30, 14.9 -> 15)
+        if abs(target_fps - round(target_fps)) < 0.1:
+            target_fps = round(target_fps)
+        print(f"-> 適用FPS: {target_fps} (ソース同期)")
+    else:
+        # ソースFPSが取得できない、または異常な値の場合
+        target_fps = args.fps
+        print(f"-> 適用FPS: {target_fps} (デフォルト値)")
+    
+    # フレーム補間器の初期化
+    frameInterpolator = None
+    if useInterpolation:
+        frameInterpolator = FrameInterpolator(
+            source_fps=source_fps,
+            target_fps=target_fps,
+            method=args.interpolation_method
+        )
+    
+    # スレッド開始
+    cap.start()
     sleep(2)
     print("接続成功")
+    print(f"最終的な出力FPS: {target_fps}fps")
+    print("=" * 70)
 
     # GStreamerパイプラインの構築（堅牢化版）
     print("ハードウェアエンコーダー（nvv4l2h264enc）を使用します")
@@ -389,10 +543,10 @@ def main():
 
     gst_pipeline = (
         "appsrc is-live=true block=true format=time do-timestamp=true ! "
-        f"video/x-raw,format=BGR,width={args.width},height={args.height},framerate={args.fps}/1 ! "
+        f"video/x-raw,format=BGR,width={args.width},height={args.height},framerate={target_fps}/1 ! "
         "videoconvert ! video/x-raw,format=BGRx ! "
         f"{nvconv} ! video/x-raw(memory:NVMM),format=NV12 ! "
-        f"nvv4l2h264enc bitrate={bitrate_bps} insert-sps-pps=true iframeinterval={args.fps*2} control-rate=1 ! "
+        f"nvv4l2h264enc bitrate={bitrate_bps} insert-sps-pps=true iframeinterval={int(target_fps*2)} control-rate=1 ! "
         "h264parse config-interval=1 ! "
         "flvmux streamable=true ! "
         f"rtmpsink location='{youtube_url}' sync=false async=false"
@@ -405,7 +559,7 @@ def main():
         gst_pipeline,
         cv2.CAP_GSTREAMER,
         0,
-        args.fps,
+        target_fps,
         (args.width, args.height)
     )
 
@@ -485,24 +639,40 @@ def main():
 
             total_detections += len(detected_heads)
 
-            try:
-                out.write(frame)
-            except Exception as e:
-                print(f"\n警告: GStreamerへのフレーム送信中にエラーが発生しました: {e}")
-                print("パイプラインが切断された可能性があります。")
-                break
-
-            frame_count += 1
+            # フレーム補間の適用
+            if frameInterpolator is not None:
+                # 補間フレームを生成
+                interpolatedFrames = frameInterpolator.interpolate(frame)
+                
+                # 補間フレームを順次送信
+                for interpFrame in interpolatedFrames:
+                    try:
+                        out.write(interpFrame)
+                        frame_count += 1
+                    except Exception as e:
+                        print(f"\n警告: GStreamerへのフレーム送信中にエラーが発生しました: {e}")
+                        print("パイプラインが切断された可能性があります。")
+                        raise
+            else:
+                # 補間なし：フレームをそのまま送信
+                try:
+                    out.write(frame)
+                    frame_count += 1
+                except Exception as e:
+                    print(f"\n警告: GStreamerへのフレーム送信中にエラーが発生しました: {e}")
+                    print("パイプラインが切断された可能性があります。")
+                    break
             # 100フレームごとに進捗状況を表示
             if frame_count % 100 == 0:
                 elapsed_time = time() - start_time
                 actual_fps = frame_count / elapsed_time
                 avg_detections = total_detections / frame_count
+                fps_diff = actual_fps - target_fps
 
                 print(f"処理済み: {frame_count}フレーム | "
                       f"検出数: {len(detected_heads)} | "
                       f"平均検出: {avg_detections:.2f} | "
-                      f"実FPS: {actual_fps:.1f} (目標: {args.fps})")
+                      f"実FPS: {actual_fps:.1f} (目標: {target_fps}, 差: {fps_diff:+.1f})")
 
     except KeyboardInterrupt:
         print("\n\nキーボード割り込みを検出しました。終了します...")
